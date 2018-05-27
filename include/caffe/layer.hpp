@@ -20,7 +20,6 @@ namespace boost { class mutex; }
 namespace caffe {
 extern vector <float *> pruning1;
 extern vector <float *> pruning2;
-extern vector <float *> pruning3;
 extern int epoch;
 extern int images;
 

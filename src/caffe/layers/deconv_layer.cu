@@ -49,7 +49,7 @@ void DeconvolutionLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
         if (propagate_down[i]) {
           this->forward_gpu_gemm(top_diff + n * this->top_dim_, weight,
               bottom_diff + n * this->bottom_dim_,
-              this->param_propagate_down_[0]);
+              this->param_propagate_down_[0], NULL, true);
         }
       }
     }
