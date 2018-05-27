@@ -27,6 +27,7 @@ class DataLayer : public BasePrefetchingDataLayer<Dtype> {
 
  protected:
   void Next();
+  void Prev();
   bool Skip();
   virtual void load_batch(Batch<Dtype>* batch);
 

@@ -11,6 +11,8 @@
 
 namespace caffe {
 
+int batches=0; //caffe uses pre-fetching of mini-batches. So a mini-batch can be queued long time before it is actually fed. to layers
+
 template <typename Dtype>
 DataLayer<Dtype>::DataLayer(const LayerParameter& param)
   : BasePrefetchingDataLayer<Dtype>(param),
@@ -77,6 +79,15 @@ void DataLayer<Dtype>::Next() {
   offset_++;
 }
 
+template<typename Dtype>
+void DataLayer<Dtype>::Prev() {
+  cursor_->Prev();
+  if (!cursor_->valid()) {
+    cursor_->SeekToFirst();
+  }
+  offset_--;
+}
+
 // This function is called on prefetch thread
 template<typename Dtype>
 void DataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
@@ -90,6 +101,9 @@ void DataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
   const int batch_size = this->layer_param_.data_param().batch_size();
 
   Datum datum;
+  if (this->phase_==TRAIN)
+         batches++;
+
   for (int item_id = 0; item_id < batch_size; ++item_id) {
     timer.Start();
     while (Skip()) {
@@ -123,6 +137,13 @@ void DataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
     trans_time += timer.MicroSeconds();
     Next();
   }
+   //If we exceed size of mega-batch, repeat the mega-batch by moving pointer to first image of mega-batch
+    if (this->phase_==TRAIN) {
+       if (batches%N1==0 && batches%(N1*(Z+1))!=0) {
+                       for (int y=0;y<N1*batch_size;y++)
+                               Prev();
+       }
+    }
   timer.Stop();
   batch_timer.Stop();
   DLOG(INFO) << "Prefetch batch: " << batch_timer.MilliSeconds() << " ms.";

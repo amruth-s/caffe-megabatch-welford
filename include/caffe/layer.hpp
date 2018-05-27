@@ -22,6 +22,11 @@ extern vector <float *> pruning1;
 extern vector <float *> pruning2;
 extern int epoch;
 extern int images;
+extern int batches;
+extern int conv_batches;
+extern int N1;
+extern int Z;
+extern bool norr;
 
 /**
  * @brief An interface for the units of computation which can be composed into a
