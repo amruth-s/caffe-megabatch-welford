@@ -5,6 +5,40 @@
 
 namespace caffe {
 
+//My matrix transpose code
+template <typename Dtype>
+__global__ void im2row_gpu_kernel(const int n, const Dtype* data_im,
+    const int height, const int width, const int kernel_h, const int kernel_w,
+    const int pad_h, const int pad_w,
+    const int stride_h, const int stride_w,
+    const int dilation_h, const int dilation_w,
+    const int height_col, const int width_col, const int channels,
+    Dtype* data_col) {
+      CUDA_KERNEL_LOOP(index, n) {
+          const int h_index = index / width_col;
+          const int h_col = h_index % height_col;
+          const int w_col = index % width_col;
+          const int c_im = h_index / height_col;
+          const int h_offset = h_col * stride_h - pad_h;
+          const int w_offset = w_col * stride_w - pad_w;
+	  const int c_col = c_im * kernel_h * kernel_w;
+          Dtype* data_col_ptr = data_col;
+	  data_col_ptr+= c_col+((h_col*width_col)+w_col)*channels*kernel_h*kernel_w;
+          const Dtype* data_im_ptr = data_im;
+          data_im_ptr += (c_im * height + h_offset) * width + w_offset;
+          for (int i = 0; i < kernel_h; ++i) {
+                  for (int j = 0; j < kernel_w; ++j) {
+                        int h_im = h_offset + i * dilation_h;
+                        int w_im = w_offset + j * dilation_w;
+                        *data_col_ptr =
+                            (h_im >= 0 && w_im >= 0 && h_im < height && w_im < width) ?
+                            data_im_ptr[i * dilation_h * width + j * dilation_w] : 0;
+                        data_col_ptr ++;
+                  }
+           }
+     }
+}
+
 template <typename Dtype>
 __global__ void im2col_gpu_kernel(const int n, const Dtype* data_im,
     const int height, const int width, const int kernel_h, const int kernel_w,
@@ -12,7 +46,7 @@ __global__ void im2col_gpu_kernel(const int n, const Dtype* data_im,
     const int stride_h, const int stride_w,
     const int dilation_h, const int dilation_w,
     const int height_col, const int width_col,
-    Dtype* data_col) {
+    Dtype* data_row) {
   CUDA_KERNEL_LOOP(index, n) {
     const int h_index = index / width_col;
     const int h_col = h_index % height_col;
@@ -21,18 +55,18 @@ __global__ void im2col_gpu_kernel(const int n, const Dtype* data_im,
     const int c_col = c_im * kernel_h * kernel_w;
     const int h_offset = h_col * stride_h - pad_h;
     const int w_offset = w_col * stride_w - pad_w;
-    Dtype* data_col_ptr = data_col;
-    data_col_ptr += (c_col * height_col + h_col) * width_col + w_col;
+    Dtype* data_row_ptr = data_row;
+    data_row_ptr += (c_col * height_col + h_col) * width_col + w_col;
     const Dtype* data_im_ptr = data_im;
     data_im_ptr += (c_im * height + h_offset) * width + w_offset;
     for (int i = 0; i < kernel_h; ++i) {
       for (int j = 0; j < kernel_w; ++j) {
         int h_im = h_offset + i * dilation_h;
         int w_im = w_offset + j * dilation_w;
-        *data_col_ptr =
+        *data_row_ptr =
             (h_im >= 0 && w_im >= 0 && h_im < height && w_im < width) ?
             data_im_ptr[i * dilation_h * width + j * dilation_w] : 0;
-        data_col_ptr += height_col * width_col;
+        data_row_ptr += height_col * width_col;
       }
     }
   }
@@ -61,6 +95,28 @@ void im2col_gpu(const Dtype* data_im, const int channels,
   CUDA_POST_KERNEL_CHECK;
 }
 
+template <typename Dtype>
+void im2row_gpu(const Dtype* data_im, const int channels,
+		const int height, const int width, const int kernel_h, const int kernel_w,
+		const int pad_h, const int pad_w,
+		const int stride_h, const int stride_w,
+		const int dilation_h, const int dilation_w,
+		Dtype* data_row) {
+	  // We are going to launch channels * height_col * width_col kernels, each
+	  // kernel responsible for copying a single-channel grid.
+	  int height_col = (height + 2 * pad_h -
+			        (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
+	  int width_col = (width + 2 * pad_w -
+		          (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
+	  int num_kernels = channels * height_col * width_col;
+	  // NOLINT_NEXT_LINE(whitespace/operators)
+	  im2row_gpu_kernel<Dtype><<<CAFFE_GET_BLOCKS(num_kernels),
+	                             CAFFE_CUDA_NUM_THREADS>>>(
+			           num_kernels, data_im, height, width, kernel_h, kernel_w, pad_h,
+			           pad_w, stride_h, stride_w, dilation_h, dilation_w, height_col,
+	  		           width_col, channels, data_row);
+	  CUDA_POST_KERNEL_CHECK;
+}
 // Explicit instantiation
 template void im2col_gpu<float>(const float* data_im, const int channels,
     const int height, const int width, const int kernel_h, const int kernel_w,
@@ -70,6 +126,15 @@ template void im2col_gpu<double>(const double* data_im, const int channels,
     const int height, const int width, const int kernel_h, const int kernel_w,
     const int pad_h, const int pad_w, const int stride_h, const int stride_w,
     const int dilation_h, const int dilation_w, double* data_col);
+template void im2row_gpu<float>(const float* data_im, const int channels,
+    const int height, const int width, const int kernel_h, const int kernel_w,
+    const int pad_h, const int pad_w, const int stride_h, const int stride_w,
+    const int dilation_h, const int dilation_w, float* data_row);
+template void im2row_gpu<double>(const double* data_im, const int channels,
+    const int height, const int width, const int kernel_h, const int kernel_w,
+    const int pad_h, const int pad_w, const int stride_h, const int stride_w,
+    const int dilation_h, const int dilation_w, double* data_row);
+
 
 template <typename Dtype, int num_axes>
 __global__ void im2col_nd_gpu_kernel(const int n, const Dtype* data_im,
