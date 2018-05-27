@@ -8,7 +8,100 @@
 #include "caffe/common.hpp"
 #include "caffe/util/math_functions.hpp"
 
+#include "caffe/util/math_functions.hpp"
+#define C1_KERNEL_NUM_BLOCKS 2048
+#define C2_KERNEL_NUM_BLOCKS 512
+#define C3_KERNEL_NUM_BLOCKS 256
+#define C1_INPUT_COLS_PER_BLOCK 4
+#define C2_C3_INPUT_VECS_PER_BLOCK 4
+#define CUDA_WARP_SIZE 32
+#define NUM_NEURONS_PER_BLOCK 16
+
 namespace caffe {
+
+//this is the kerbel where one warp handles computation of one neuron
+//TODO: low level optimizations are required!
+__global__ void my_conv_kernel_generic_f(const float* matrix1, const float* matrix2, float* outputs, const int M, const int N, const int K)
+{
+  const unsigned int tid = threadIdx.x;
+  const unsigned int bid = blockIdx.x;
+  float partial_sum = 0.0;
+  const unsigned int warp_id = tid >> 5;// / CUDA_WARP_SIZE;
+  const unsigned int intra_warp_tid = tid & 31;// % CUDA_WARP_SIZE;
+  const int g_warp_id=(bid<<4)+warp_id;
+  const unsigned int matrix2_col_id=g_warp_id%N; //global warp id
+  const unsigned int matrix1_row_id = g_warp_id/N;
+  int matrix2_index = (matrix2_col_id*K) + intra_warp_tid;
+  int matrix1_index = (matrix1_row_id *K)+intra_warp_tid;
+  if (matrix2_index>= K*N || matrix1_index >=K*M)
+          return;
+  partial_sum += matrix1[matrix1_index] * matrix2[matrix2_index];
+  #pragma unroll
+  for (int q=32;intra_warp_tid+q<K;q+=32) {
+      matrix2_index = 32 + matrix2_index;
+      matrix1_index = matrix1_index + 32;
+      if (matrix2_index >= K*N  || matrix1_index >=K*M)
+            return;
+      partial_sum += matrix1[matrix1_index] * matrix2[matrix2_index];
+  }
+    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 16, 32);
+    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 8, 32);
+    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 4, 32);
+    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 2, 32);
+    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 1, 32);
+    if(intra_warp_tid == 0)
+          outputs[g_warp_id] = partial_sum;
+}
+
+__global__ void my_conv_kernel_generic_pruning(const float* matrix1, const float* matrix2, float* outputs, const int M, const int N, const int K, float *pruning, bool is_normal)
+{
+  float prun=pruning[(blockIdx.x<<4)+(threadIdx.x >> 5)];
+  const unsigned int tid = threadIdx.x;
+  const unsigned int bid = blockIdx.x;
+  float partial_sum = 0.0;
+  const unsigned int warp_id = tid >> 5;// / CUDA_WARP_SIZE;
+  const unsigned int intra_warp_tid = tid & 31;// % CUDA_WARP_SIZE;
+  const int g_warp_id=(bid<<4)+warp_id;
+  if(prun==1234){
+	  const unsigned int matrix2_col_id=g_warp_id%N; //global warp id
+	  const unsigned int matrix1_row_id = g_warp_id/N;
+	  int matrix2_index = (matrix2_col_id*K) + intra_warp_tid;
+	  int matrix1_index = (matrix1_row_id *K)+intra_warp_tid;
+	  if (matrix2_index>= K*N || matrix1_index >=K*M)
+	          return;
+	  partial_sum += matrix1[matrix1_index] * matrix2[matrix2_index];
+	  #pragma unroll
+	  for (int q=32;intra_warp_tid+q<K;q+=32) {
+	      matrix2_index = 32 + matrix2_index;
+	      matrix1_index = matrix1_index + 32;
+	      if (matrix2_index >= K*N  || matrix1_index >=K*M)
+	            return;
+	      partial_sum += matrix1[matrix1_index] * matrix2[matrix2_index];
+	  }
+	    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 16, 32);
+	    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 8, 32);
+	    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 4, 32);
+	    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 2, 32);
+	    partial_sum += __shfl_down_sync(0xffffffff, partial_sum, 1, 32);
+	    if(intra_warp_tid == 0)
+	          outputs[g_warp_id] = partial_sum;
+  } else {
+	    if(intra_warp_tid == 0)
+		  outputs[g_warp_id] = prun;
+  }
+}
+
+template<>
+void test_conv_function<float>(const float* weights, const float* inputs, float* outputs, int M, int N, int K, float* pruning, const bool is_normal) {
+	  if(is_normal)
+	    my_conv_kernel_generic_f<<<((M*N)>>4), CAFFE_CUDA_NUM_THREADS>>>(weights, inputs, outputs, M, N, K);
+	  else
+	    my_conv_kernel_generic_pruning<<<((M*N)>>4), CAFFE_CUDA_NUM_THREADS>>>(weights, inputs, outputs, M, N, K, pruning,is_normal);
+}
+
+template<>
+void test_conv_function<double>(const double* weights, const double* inputs, double* outputs, int M, int N, int K, float* pruning, bool is_normal) {
+}
 
 template <>
 void caffe_gpu_gemm<float>(const CBLAS_TRANSPOSE TransA,

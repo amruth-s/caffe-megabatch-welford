@@ -166,6 +166,9 @@ void caffe_gpu_axpy(const int N, const Dtype alpha, const Dtype* X,
     Dtype* Y);
 
 template <typename Dtype>
+void test_conv_function(const Dtype* weights, const Dtype* inputs, Dtype* outputs,int M, int N, int K, float* pruning, bool is_normal);
+
+template <typename Dtype>
 void caffe_gpu_axpby(const int N, const Dtype alpha, const Dtype* X,
     const Dtype beta, Dtype* Y);
 

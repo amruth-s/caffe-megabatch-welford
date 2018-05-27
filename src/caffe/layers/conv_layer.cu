@@ -41,26 +41,22 @@ void ConvolutionLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
     }
     for (int n = 0; n < this->num_; ++n) {
       if (this->phase_ == TEST || ((this->phase_ == TRAIN) && (epoch<p_t))){
-          this->forward_gpu_gemm(bottom[i]->count() / this->num_,bottom_data + n * this->bottom_dim_, this->blobs_[0]->count(), weight,
-              top[i]->count() / this->num_, top_data + n * this->top_dim_, NULL,true);
+          this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight,
+              top_data + n * this->top_dim_, NULL,true);
       } else {
 	  if ((epoch-p_t)% (Z+1)==0){
-		this->forward_gpu_gemm(bottom[i]->count() / this->num_, bottom_data + n * this->bottom_dim_, this->blobs_[0]->count(), weight,
-	              top[i]->count() / this->num_, top_data + n * this->top_dim_,NULL,true);
-		if (count == 32768)
+		this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight,
+	              top_data + n * this->top_dim_,NULL,true);
+		if (count == 11520)
 			 Threshold_pruning<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, top_data + n * this->top_dim_, pruning1[images/100]+n * this->top_dim_);
-		else if (count==8192)
-			 Threshold_pruning<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, top_data + n * this->top_dim_, pruning2[images/100]+n * this->top_dim_);
 		else 
-			 Threshold_pruning<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, top_data + n * this->top_dim_, pruning3[images/100]+n * this->top_dim_);
+			 Threshold_pruning<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, top_data + n * this->top_dim_, pruning2[images/100]+n * this->top_dim_);
 		CUDA_POST_KERNEL_CHECK;
 	  } else {
-		if (count == 32768)
-			this->forward_gpu_gemm(bottom[i]->count() / this->num_, bottom_data + n * this->bottom_dim_, this->blobs_[0]->count(), weight, top[i]->count() / this->num_, top_data + n * this->top_dim_, pruning1[images/100]+n * this->top_dim_, false);
-		else if (count==8192)
-			this->forward_gpu_gemm(bottom[i]->count() / this->num_, bottom_data + n * this->bottom_dim_, this->blobs_[0]->count(), weight, top[i]->count() / this->num_, top_data + n * this->top_dim_, pruning2[images/100]+n * this->top_dim_, false);
+		if (count == 11520)
+			this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, top_data + n * this->top_dim_, pruning1[images/100]+n * this->top_dim_, false);
 		else 
-			this->forward_gpu_gemm(bottom[i]->count() / this->num_, bottom_data + n * this->bottom_dim_, this->blobs_[0]->count(), weight, top[i]->count() / this->num_, top_data + n * this->top_dim_, pruning3[images/100]+n * this->top_dim_, false); 
+			this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, top_data + n * this->top_dim_, pruning2[images/100]+n * this->top_dim_, false); 
 	  }
       }
       if (this->bias_term_) {
