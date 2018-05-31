@@ -83,7 +83,9 @@ template<typename Dtype>
 void DataLayer<Dtype>::Prev() {
   cursor_->Prev();
   if (!cursor_->valid()) {
-    cursor_->SeekToFirst();
+    LOG_IF(INFO, Caffe::root_solver())
+        << "Restarting data prefetching from last.";
+    cursor_->SeekToLast();
   }
   offset_--;
 }

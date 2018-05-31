@@ -26,6 +26,7 @@ class LMDBCursor : public Cursor {
     mdb_txn_abort(mdb_txn_);
   }
   virtual void SeekToFirst() { Seek(MDB_FIRST); }
+  virtual void SeekToLast() { Seek(MDB_LAST); }
   virtual void Next() { Seek(MDB_NEXT); }
   virtual void Prev() { Seek(MDB_PREV); } //pointer used for going to previously seen images/batch
   virtual string key() {

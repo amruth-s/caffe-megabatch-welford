@@ -15,6 +15,7 @@ class Cursor {
   Cursor() { }
   virtual ~Cursor() { }
   virtual void SeekToFirst() = 0;
+  virtual void SeekToLast() = 0;
   virtual void Next() = 0;
   virtual void Prev() = 0;
   virtual string key() = 0;
