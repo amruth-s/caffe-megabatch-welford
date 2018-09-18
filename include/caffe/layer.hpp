@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <cuda_fp16.h>
 
 #include "caffe/blob.hpp"
 #include "caffe/common.hpp"
@@ -40,6 +41,11 @@ extern int conv_batches;
 extern int N1;
 extern int Z;
 extern bool norr;
+extern float* first1;
+extern float* first2;
+extern float* first3;
+extern bool init;
+extern int epoch_int;
 
 /**
  * @brief An interface for the units of computation which can be composed into a

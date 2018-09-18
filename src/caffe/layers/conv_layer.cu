@@ -1,52 +1,86 @@
 #include <vector>
-
+#include <cuda_fp16.h>
+#include <math.h>
+#include "/usr/local/cuda/include/math_constants.h"
 #include "caffe/layers/conv_layer.hpp"
+#include <cuda_profiler_api.h>
 
 namespace caffe {
 
-float * pruning1; //used for entry matrix calculation
-float * pruning2;
-float * pruning3;
-float * op1;
-float * op2;
-float * op3;
+float* pruning1; 
+float* pruning2;
+float* pruning3;
+float* op1;
+float* op2;
+float* op3;
+float* first1;
+float* first2;
+float* first3;
 float * ruing1;
 float * ruing2;
 float * ruing3;
-float * mu1;
-float * mu2;
-float * mu3;
-float * sig1;
-float * sig2;
-float * sig3;
+float* mu1;
+float* mu2;
+float* mu3;
+float* sig1;
+float* sig2;
+float* sig3;
 int epoch=0; //counts no of epochs
 int images=0; //counts no of images fed to neural net
-int Z=1; //skipping interval.
+int Z=2; //skipping interval.
 bool norr=true;
 int conv_batches=0; //counter to track no of mini-batches that are fed to conv layer
 int N1=2; //size of mega-batch or no of mini-batches in a mega-batch
+bool init=true;
+int epoch_int=0;
 
 template <typename Dtype>
-__global__ void Threshold_pruning(const int n,
-    Dtype* in, float* out) {
-  CUDA_KERNEL_LOOP(index, n) {
-	  if (in[index]>10) //threshold=10
-		  out[index] =1234; //some magic number for me to identify if a neuron is marked for skipping computation or not based on threshold value.
-	  else
-		  out[index] = in[index];
-  }
+__global__ void update1(const int n, float* sig, float* op, float* mu, const int epoch, Dtype* curr_op, float* pruning, const int idx, float* first) {
+	CUDA_KERNEL_LOOP(index, n) {
+		index+=idx;
+		float c_op=curr_op[index-idx];
+		float c_sig=sig[index];
+		float c_pun=pruning[index];
+		float old_mu=mu[index];
+		float c_fst=first[index];
+		float opp=op[index];
+        	c_sig+=(epoch/(epoch+1.0))*(c_op-old_mu)*(c_op-old_mu);
+                float muu=(epoch/(epoch+1.0))*old_mu+(c_op/(epoch+1));
+		if (!epoch)
+			op[index]=0;
+		else
+	                opp+=((epoch-1)/((epoch+1)*(epoch+1)))*(c_op-old_mu)*(c_op-old_mu)+((c_pun-muu)*(c_op-muu))+((c_op-old_mu)/(epoch+1))*(c_pun+c_fst-(2*old_mu));
+		pruning[index]=c_op;
+		sig[index]=c_sig;
+		op[index]=opp;
+		mu[index]=muu;
+		index-=idx;
+	}
 }
-
 template <typename Dtype>
-__global__ void Threshold_pruning(const int n,
-    float* in, float* out, Dtype* out2) {
-  CUDA_KERNEL_LOOP(index, n) {
-          if (in[index]<0.5){
-                  out[index] =1234;
-          } else {
-                  out[index] = out2[index];
-          }
-  }
+__global__ void update(const int n, float* sig, float* op, float* mu, const int epoch, Dtype* curr_op, float* pruning, const int idx, float* ruing, float* first, bool init) {
+	CUDA_KERNEL_LOOP(index, n) {
+		index+=idx;
+		float c_op=curr_op[index-idx];
+		float old_mu=init?0:mu[index];
+		float c_sig=init?0:sig[index];
+		float opp=init?0:op[index];
+		float c_prun=init?0:pruning[index];
+		if (init)
+			first[index]=c_op;
+		float muu=(epoch/(epoch+1.0))*old_mu+(c_op/(epoch+1));
+        	c_sig+=(epoch/(epoch+1.0))*(c_op-old_mu)*(c_op-old_mu);
+	        opp+=((epoch-1)/((epoch+1)*(epoch+1)))*(c_op-old_mu)*(c_op-old_mu)+((c_prun-muu)*(c_op-muu))+((c_op-old_mu)/(epoch+1))*(c_prun+first[index]-(2*old_mu));
+		if (c_sig==0)
+                	ruing[index]=c_op;
+                else
+                        ruing[index]=abs(opp/c_sig)<0.1?1234:c_op; 
+		pruning[index]=c_op;
+		sig[index]=c_sig;
+		op[index]=opp;
+		mu[index]=muu;
+		index-=idx;
+	}
 }
 
 template <typename Dtype>
@@ -54,212 +88,122 @@ void ConvolutionLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top) {
   const int p_t =2;  //pre-stan interval
   const Dtype* weight = this->blobs_[0]->gpu_data();
+  int indexx,temp_var;
   if(this->phase_==TRAIN && this->top_dim_==32768){
        ++conv_batches;
   }
-  int indexx=(conv_batches%N1)-1;
-  if (indexx<0)
-         indexx=N1-1;
+  indexx=(conv_batches-1)%N1;
+  if(this->phase_==TRAIN && this->top_dim_==32768){
+	  if (!indexx)
+		epoch_int++;
+  }
   for (int i = 0; i < bottom.size(); ++i) {
     const Dtype* bottom_data = bottom[i]->gpu_data();
     Dtype* top_data = top[i]->mutable_gpu_data();
     const int count = this->top_dim_;
-#if 0
-    if (epoch==0 && images< N1*this->num_ && this->phase_ == TRAIN){ //repeat this until we allocate memory for entry matrix for all neurons for all images in megabatch.
-	    float* d_x = NULL;
-	    cudaMalloc(&d_x, sizeof(float)*count*this->num_);
-	    cudaMemset(d_x,0,count*this->num_*sizeof(float));
-	    if (count == 32768) //output dimension of LeNet are 11520 for 1st layer and 3200 for 2nd layer.
-	         pruning1.push_back(d_x);
-	    else if (count == 8192)
-        	 pruning2.push_back(d_x);
-	    else
-		 pruning3.push_back(d_x);
-    }
-#endif
     if (epoch==0 && images==0 && this->phase_ == TRAIN){
-            float* d_x = (float*)calloc(count*N1*this->num_, sizeof(float));
-            float* mu_x = (float*)calloc(count*N1*this->num_, sizeof(float));
-            float* sig_x = (float*)calloc(count*N1*this->num_, sizeof(float));
-            float* num = (float*)calloc(count*N1*this->num_, sizeof(float));
             if (count == 32768){//11520) {
-                pruning1=d_x; //saves prev epoch output
-                mu1=mu_x; //running avg
-                sig1=sig_x; //running std dev
-                op1=num; //num of autocorrelation
+                cudaMalloc((void **)&pruning1,count*N1*this->num_*sizeof(float)); //saves prev epoch output
+                cudaMemset(pruning1,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&mu1,count*N1*this->num_*sizeof(float)); //running avg
+                cudaMemset(mu1,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&sig1,count*N1*this->num_*sizeof(float)); //running std dev
+                cudaMemset(sig1,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&op1,count*N1*this->num_*sizeof(float)); //num of autocorrelation
+                cudaMemset(op1,0,count*N1*this->num_*sizeof(float));
                 cudaMalloc((void **)&ruing1,count*N1*this->num_*sizeof(float)); //entry matrix
                 cudaMemset(ruing1,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&first1,count*N1*this->num_*sizeof(float)); //first value of the series
+                cudaMemset(first1,0,count*N1*this->num_*sizeof(float));
             } else if  (count==8192){
-                pruning2=d_x;
-                mu2=mu_x;
-                op2=num;
-                sig2=sig_x;
+                cudaMalloc((void **)&pruning2,count*N1*this->num_*sizeof(float)); 
+                cudaMemset(pruning2,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&mu2,count*N1*this->num_*sizeof(float)); 
+                cudaMemset(mu2,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&sig2,count*N1*this->num_*sizeof(float));
+                cudaMemset(sig2,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&op2,count*N1*this->num_*sizeof(float)); 
+                cudaMemset(op2,0,count*N1*this->num_*sizeof(float));
                 cudaMalloc((void **)&ruing2,count*N1*this->num_*sizeof(float));
                 cudaMemset(ruing2,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&first2,count*N1*this->num_*sizeof(float)); 
+                cudaMemset(first2,0,count*N1*this->num_*sizeof(float));
             }else{
-                pruning3=d_x;
-                mu3=mu_x;
-                op3=num;
-                sig3=sig_x;
+                cudaMalloc((void **)&pruning3,count*N1*this->num_*sizeof(float));
+                cudaMemset(pruning3,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&mu3,count*N1*this->num_*sizeof(float));
+                cudaMemset(mu3,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&sig3,count*N1*this->num_*sizeof(float));
+                cudaMemset(sig3,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&op3,count*N1*this->num_*sizeof(float));
+                cudaMemset(op3,0,count*N1*this->num_*sizeof(float));
                 cudaMalloc((void **)&ruing3,count*N1*this->num_*sizeof(float));
                 cudaMemset(ruing3,0,count*N1*this->num_*sizeof(float));
+                cudaMalloc((void **)&first3,count*N1*this->num_*sizeof(float));
+                cudaMemset(first3,0,count*N1*this->num_*sizeof(float));
             }
     }
-
-    if (conv_batches%(N1*(Z+1)) <= N1 && conv_batches%(N1*(Z+1))>0) {
-              norr=true;
-    } else {
-              norr=false;
+    if(this->phase_ == TRAIN ){
+	    temp_var=conv_batches%(N1*(Z+1));
+	    if (temp_var<=2*N1 && temp_var>0) {
+	              norr=true;
+		      init=(temp_var<=N1)?true:false;
+	    } else {
+              	      norr=false;
+        	      init=false;
+    	    }
     }
-    float new_val[count] = {0};
     for (int n = 0; n < this->num_; ++n) {
-      float* curr_op=(float *)malloc(count*sizeof(float));
-      float* gaf=NULL;
-      if (this->phase_ == TEST || ((this->phase_ == TRAIN) && (epoch<p_t))){
+      if (this->phase_ == TEST || ((this->phase_ == TRAIN) && (epoch<p_t))){ 
           this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight,
               top_data + n * this->top_dim_, NULL,true);
-	  if (this->phase_ == TRAIN){
-                        cudaDeviceSynchronize();
-                        cudaMemcpy(curr_op,top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-                        //update mean and var now.
-			int index=indexx*this->num_*this->top_dim_+(n*this->top_dim_);
-                        for (int neuron=0; neuron<count; neuron++){
-                                index+=neuron;
-                                if (count==32768){
-                                        sig1[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu1[index])*(curr_op[neuron]-mu1[index]);
-                                        op1[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu1[index])*(pruning1[index]-mu1[index]);
-                                        mu1[index]= (epoch/(epoch+1.0))*mu1[index]+(curr_op[neuron]/(epoch+1));
-                                } else if (count==8192){
-                                        op2[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu2[index])*(pruning2[index]-mu2[index]);
-                                        sig2[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu2[index])*(curr_op[neuron]-mu2[index]);
-                                        mu2[index]= (epoch/(epoch+1.0))*mu2[index]+(curr_op[neuron]/(epoch+1));
-                                } else {
-                                        op3[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu3[index])*(pruning3[index]-mu3[index]);
-                                        sig3[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu3[index])*(curr_op[neuron]-mu3[index]);
-                                        mu3[index]= (epoch/(epoch+1.0))*mu3[index]+(curr_op[neuron]/(epoch+1));
-                                }
-				index-=neuron;
-                        }
-                        if(count==32768)
-                                cudaMemcpy(pruning1+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-                        else if(count==8192)
-                                cudaMemcpy(pruning2+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-                        else
-                                cudaMemcpy(pruning3+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-          }
       } else {
-	  cudaMalloc((void **)&gaf,sizeof(float)*count);
 	  if (norr){
 		this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight,
 	              top_data + n * this->top_dim_,NULL,true);
-		cudaDeviceSynchronize();
-		cudaMemcpy(curr_op,top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-		//update mean and var now.
-		int index=indexx*this->num_*this->top_dim_+(n*this->top_dim_);
-                        for (int neuron=0; neuron<count; neuron++){
-                                index+=neuron;
-                                if (count==32768){
-                                        sig1[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu1[index])*(curr_op[neuron]-mu1[index]);
-                                        op1[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu1[index])*(pruning1[index]-mu1[index]);
-					if (sig1[index]==0)
-                                                new_val[neuron]=1.0;
-                                        else
-                                                new_val[neuron]=abs(op1[index]/sig1[index]);
-                                        mu1[index]= (epoch/(epoch+1.0))*mu1[index]+(curr_op[neuron]/(epoch+1));
-                                } else if (count==8192){
-                                        op2[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu2[index])*(pruning2[index]-mu2[index]);
-                                        sig2[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu2[index])*(curr_op[neuron]-mu2[index]);
-                                        if (sig2[index]==0)
-                                                new_val[neuron]=1.0;
-                                        else
-                                                new_val[neuron]=abs(op2[index]/sig2[index]);
-                                        mu2[index]= (epoch/(epoch+1.0))*mu2[index]+(curr_op[neuron]/(epoch+1));
-                                } else {
-                                        op3[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu3[index])*(pruning3[index]-mu3[index]);
-                                        sig3[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu3[index])*(curr_op[neuron]-mu3[index]);
-                                        if (sig3[index]==0)
-                                                new_val[neuron]=1.0;
-                                        else
-                                                new_val[neuron]=abs(op3[index]/sig3[index]);
-                                        mu3[index]= (epoch/(epoch+1.0))*mu3[index]+(curr_op[neuron]/(epoch+1));
-                                }
-				index-=neuron;
-                        }
-		cudaMemcpy(gaf,new_val,count,cudaMemcpyHostToDevice);
                         if (count == 32768){
-                                Threshold_pruning<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, gaf, ruing1+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_);
+				update<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, sig1, op1, mu1, epoch_int-1, 
+					top_data + n * this->top_dim_, pruning1, indexx*this->num_*this->top_dim_+(n*this->top_dim_), ruing1, first1, init);
                         } else if (count==8192) {
-                                Threshold_pruning<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, gaf, ruing2+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_);
+				update<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, sig2, op2, mu2, epoch_int-1, 
+					top_data + n * this->top_dim_, pruning2, indexx*this->num_*this->top_dim_+(n*this->top_dim_), ruing2, first2, init);
                         } else {
-                                Threshold_pruning<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, gaf, ruing3+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_);
+				update<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, sig3, op3, mu3, epoch_int-1, 
+					top_data + n * this->top_dim_, pruning3, indexx*this->num_*this->top_dim_+(n*this->top_dim_), ruing3, first3, init);
                         }
-                        if(count==32768)
-                                cudaMemcpy(pruning1+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-                        else if(count==8192)
-                                cudaMemcpy(pruning2+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-                        else
-                                cudaMemcpy(pruning3+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
 		CUDA_POST_KERNEL_CHECK;
 	  } else {
-		if (count == 32768)
-			this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, top_data + n * this->top_dim_, ruing1+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), false);
-		else if (count == 8192) 
-			this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, top_data + n * this->top_dim_, ruing2+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), false);
-		else
-			this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, top_data + n * this->top_dim_, ruing3+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), false);
-		cudaDeviceSynchronize();
-		cudaMemcpy(curr_op,top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-		//update mean and var now.
-			int index=indexx*this->num_*this->top_dim_+(n*this->top_dim_);
-                        for (int neuron=0; neuron<count; neuron++){
-                                index+=neuron;
-                                if (count==32768){
-                                        sig1[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu1[index])*(curr_op[neuron]-mu1[index]);
-                                        op1[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu1[index])*(pruning1[index]-mu1[index]);
-                                        if (sig1[index]==0)
-                                                new_val[neuron]=1.0;
-                                        else    
-                                                new_val[neuron]=abs(op1[index]/sig1[index]);
-                                        mu1[index]= (epoch/(epoch+1.0))*mu1[index]+(curr_op[neuron]/(epoch+1));
-                                } else if (count==8192){
-                                        op2[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu2[index])*(pruning2[index]-mu2[index]);
-                                        sig2[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu2[index])*(curr_op[neuron]-mu2[index]);
-                                        if (sig2[index]==0)
-                                                new_val[neuron]=1.0;
-                                        else    
-                                                new_val[neuron]=abs(op2[index]/sig2[index]);
-                                        mu2[index]= (epoch/(epoch+1.0))*mu2[index]+(curr_op[neuron]/(epoch+1));
-                                } else {
-                                        op3[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu3[index])*(pruning3[index]-mu3[index]);
-                                        sig3[index]+=(epoch/(epoch+1.0))*(curr_op[neuron]-mu3[index])*(curr_op[neuron]-mu3[index]);
-                                        if (sig3[index]==0)
-                                                new_val[neuron]=1.0;
-                                        else    
-                                                new_val[neuron]=abs(op3[index]/sig3[index]);
-                                        mu3[index]= (epoch/(epoch+1.0))*mu3[index]+(curr_op[neuron]/(epoch+1));
-                                }
-				index-=neuron;
+                        if (count == 32768){
+				this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, 
+					top_data + n * this->top_dim_, ruing1+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), false);
+				update1<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, sig1, op1, mu1, epoch_int-1, 
+					top_data + n * this->top_dim_, pruning1, indexx*this->num_*this->top_dim_+(n*this->top_dim_), first1);
+                        } else if (count==8192) {
+				this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, 
+					top_data + n * this->top_dim_, ruing2+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), false);
+				update1<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, sig2, op2, mu2, epoch_int-1, 
+					top_data + n * this->top_dim_, pruning2, indexx*this->num_*this->top_dim_+(n*this->top_dim_), first2);
+                        } else {
+				this->forward_gpu_gemm(bottom_data + n * this->bottom_dim_, weight, 
+					top_data + n * this->top_dim_, ruing3+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), false);
+				update1<Dtype><<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, sig3, op3, mu3, epoch_int-1, 
+					top_data + n * this->top_dim_, pruning3, indexx*this->num_*this->top_dim_+(n*this->top_dim_), first3);
                         }
-                        if(count==32768)
-                                cudaMemcpy(pruning1+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-                        else if(count==8192)
-                                cudaMemcpy(pruning2+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
-                        else    
-                                cudaMemcpy(pruning3+(indexx*this->num_*this->top_dim_)+(n*this->top_dim_), top_data + n * this->top_dim_,this->top_dim_,cudaMemcpyDeviceToHost);
                 CUDA_POST_KERNEL_CHECK;
 	  }
       }
-	free(curr_op);
-	cudaFree(gaf);
       if (this->bias_term_) {
         const Dtype* bias = this->blobs_[1]->gpu_data();
         this->forward_gpu_bias(top_data + n * this->top_dim_, bias);
       }
     }
     if (this->phase_ == TRAIN){
-	if(this->top_dim_ == 4096) //dimension of last layer
+    	if (!temp_var && this->top_dim_==4096){
+		epoch_int=0;
+    	}
+	if(this->top_dim_ == 4096 & norr) //dimension of last layer
 		images+=this->num_;
-	if (images >=50000){ //MNIST has 60k images in total
+	if (images >=50000 && conv_batches%(N1*(Z+1))==0){ //MNIST has 60k images in total
 		epoch++;
 		images=0;
 	}

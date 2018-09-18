@@ -93,10 +93,29 @@ __global__ void my_conv_kernel_generic_pruning(const float* matrix1, const float
 
 template<>
 void test_conv_function<float>(const float* weights, const float* inputs, float* outputs, int M, int N, int K, float* pruning, const bool is_normal) {
-	  if(is_normal)
+	  if(is_normal){
+/*float time;
+cudaEvent_t start, stop;
+cudaEventCreate(&start);
+cudaEventCreate(&stop);
+cudaEventRecord(start, 0);*/
 	    my_conv_kernel_generic_f<<<((M*N)>>4), CAFFE_CUDA_NUM_THREADS>>>(weights, inputs, outputs, M, N, K);
-	  else
+/*cudaEventRecord(stop, 0);
+cudaEventSynchronize(stop);
+cudaEventElapsedTime(&time, start, stop);
+printf("Kernel exec Time:  %f ms \n", time);*/
+	  } else {
+/*float time;
+cudaEvent_t start, stop;
+cudaEventCreate(&start);
+cudaEventCreate(&stop);
+cudaEventRecord(start, 0);*/
 	    my_conv_kernel_generic_pruning<<<((M*N)>>4), CAFFE_CUDA_NUM_THREADS>>>(weights, inputs, outputs, M, N, K, pruning,is_normal);
+/*cudaEventRecord(stop, 0);
+cudaEventSynchronize(stop);
+cudaEventElapsedTime(&time, start, stop);
+printf("Time prun:  %f ms \n", time);*/
+	  }
 }
 
 template<>

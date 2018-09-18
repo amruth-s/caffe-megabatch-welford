@@ -84,7 +84,11 @@ class Net {
 
   Dtype ForwardBackward() {
     Dtype loss;
+    /*clock_t start, end;
+    start = clock();*/
     Forward(&loss);
+    /*end = clock();
+    printf("total fwd pass time %lf \n",((double) (end - start)) / CLOCKS_PER_SEC);*/
     Backward();
     return loss;
   }

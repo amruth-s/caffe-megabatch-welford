@@ -140,12 +140,12 @@ void DataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
     Next();
   }
    //If we exceed size of mega-batch, repeat the mega-batch by moving pointer to first image of mega-batch
-    if (this->phase_==TRAIN) {
+   if (this->phase_==TRAIN) {
        if (batches%N1==0 && batches%(N1*(Z+1))!=0) {
                        for (int y=0;y<N1*batch_size;y++)
                                Prev();
        }
-    }
+   }
   timer.Stop();
   batch_timer.Stop();
 }

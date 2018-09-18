@@ -518,6 +518,8 @@ Dtype Net<Dtype>::ForwardFromTo(int start, int end) {
   CHECK_LT(end, layers_.size());
   Dtype loss = 0;
   for (int i = start; i <= end; ++i) {
+    /*clock_t start, end;
+    start = clock();*/ //AMRUTH
     for (int c = 0; c < before_forward_.size(); ++c) {
       before_forward_[c]->run(i);
     }
@@ -527,6 +529,8 @@ Dtype Net<Dtype>::ForwardFromTo(int start, int end) {
     for (int c = 0; c < after_forward_.size(); ++c) {
       after_forward_[c]->run(i);
     }
+    /*end = clock();
+    printf("total layer %d time %lf \n",i, ((double) (end - start)) / CLOCKS_PER_SEC);*/
   }
   return loss;
 }
