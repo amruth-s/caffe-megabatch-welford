@@ -70,7 +70,10 @@ __global__ void update(const int n, float* sig, float* op, float* mu, const int 
 			first[index]=c_op;
 		float muu=(epoch/(epoch+1.0))*old_mu+(c_op/(epoch+1));
         	c_sig+=(epoch/(epoch+1.0))*(c_op-old_mu)*(c_op-old_mu);
-	        opp+=((epoch-1)/((epoch+1)*(epoch+1)))*(c_op-old_mu)*(c_op-old_mu)+((c_prun-muu)*(c_op-muu))+((c_op-old_mu)/(epoch+1))*(c_prun+first[index]-(2*old_mu));
+		if (epoch)
+	        	opp+=((epoch-1)/((epoch+1)*(epoch+1)))*(c_op-old_mu)*(c_op-old_mu)+((c_prun-muu)*(c_op-muu))+((c_op-old_mu)/(epoch+1))*(c_prun+first[index]-(2*old_mu));
+		else
+			opp=0.0;
 		if (c_sig==0)
                 	ruing[index]=c_op;
                 else
