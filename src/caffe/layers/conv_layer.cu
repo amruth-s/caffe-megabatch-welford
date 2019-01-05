@@ -149,9 +149,8 @@ void ConvolutionLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
     if(this->phase_ == TRAIN ){
 	    temp_var=conv_batches%(N1*(Z+1));
 	    if (temp_var<=2*N1 && temp_var>0) {
-	              //norr=true;
+	              norr=true;
 		      init=(temp_var<=N1)?true:false;
-		      norr=init;
 	    } else {
               	      norr=false;
         	      init=false;
